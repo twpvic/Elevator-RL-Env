@@ -2,9 +2,10 @@ class Passenger:
     """
     Represents a single passenger in the system.
     """
-    def __init__(self, destination_floor, arrival_time):
+    def __init__(self, passenger_id, source_floor, destination_floor, spawn_time):
+        self.id = passenger_id
         self.destination_floor = destination_floor
-        self.arrival_time = arrival_time
+        self.spawn_time = spawn_time
         
         # Metrics
         self.wait_time_floor = 0
