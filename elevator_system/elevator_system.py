@@ -54,3 +54,53 @@ class ElevatorSystemEnv:
             state.append(down_button)
 
         return np.array(state, dtype.np.float32)
+
+    def spawn_passengers(self):
+        if random.random() < arrival_rate:
+            start = random.randint(0, num_floors)
+            dest = random.randint(0, num_floors)
+            while dest == start:
+                dest = random.randint(0, num_floors)
+
+            p = Passenger(self.passenger_counter, start, dest, self.time_step)
+            self.floors[start].add_passenger(p)
+            self.passenger_counter += 1
+
+    def step(self, actions):
+        self.time_step += 1
+        self.spawn_passengers()
+
+        total_reward = 0
+        done = False
+        info = {}
+
+        for i, elevator in enumerate(self.elevators):
+            action = actions[i]
+            current_floor_obj = self.floors[elevator.current_floor]
+
+            # forced actions
+            # check if we have passengers in the elevator
+
+            if not elevator.is_empty():
+                if elevator.passengers[elevator.current_floor]:
+                    action = action_alight
+
+                else:
+                    target_floor = -1
+                    for floor_idx, q in enumerate(elevator.passengers):
+                        if q:
+                            target_floor = floor_idx
+                            break
+
+                    if target_floor != -1
+                        if elevator.current_floor < target_floor:
+                            action = action_up
+
+                        elif elevator.current_floor > target_floor
+                            action = action_down
+
+            # execute action
+            if action == action_up:
+                
+            
+                    
