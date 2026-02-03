@@ -7,9 +7,7 @@ class Floor:
     def __init__(self, level):
         self.level = level
         self.waiting_passengers = deque() # Queue of passenger objects
-        self.button_up = 0
-        self.button_down = 0
-
+        
     def add_passenger(self.passenger):
         self.waiting_passengers.append(passenger)
 
@@ -21,10 +19,4 @@ class Floor:
             self.waiting_passengers.remove(passenger)
             return passenger
         return None
-    
-    def clear_buttons(self, direction):
-        """Clears the button for a specific direction if served."""
-        if direction == 1:
-            self.button_up = 0
-        elif direction == -1:
-            self.button_down = 0
+
