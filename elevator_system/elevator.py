@@ -1,38 +1,48 @@
 from collections import deque
 import random
+from config import *
 
 class Elevator:
-    """
-    Represents an individual elevator unit.
-    """
-    def __init__(self, capacity, current_floor, num_floors):
+    def __init__(self, elevator_id, num_floors):
+        self.id = elevator_id
+        self.passengers = []    # list of passenger objects
+        self.current_floor = random.ranint(0, num_floors - 1)
+        self.capacity = elevator_capacity
         self.num_floors = num_floors
-        self.current_floor = current_floor
-        self.destination_floor = current_floor
-        self.capacity = capacity
         
-        # State variables
+        # might delete
         self.num_passengers = 0
-        self.passengers = [deque() for _ in range(num_floors)]
         self.is_loading = False
         self.direction = 0  # 0: idle, 1: up, -1: down
         self.call_direction = 0 # The direction of the call currently being served
 
-    def move(self):
-        """Moves the elevator one step in its current direction."""
-        if self.direction == 1:
-            self.current_floor += 1
-        elif self.direction == -1:
-            self.current_floor -= 1
+    def move(self, action):
+        if action == action_up:
+            if self.current_floor < self.num_floors - 1:
+                self.current_floor += 1
+            else:
+                return False, reward_invalid_move
+        if action == action_down:
+            if self.current_floor > 0:
+                self.current_floor -= 1
+            else:
+                return False, reward_invalid_move
+        
 
     def board_passenger(self, passenger):
-        """Adds a passenger to the elevator."""
-        self.num_passengers += 1
-        self.passengers[passenger.destination_floor].append(passenger)
+        if len(self.passengers) < self.capacity:
+            self.passengers.append(passenger)
+            return True
+        return False
+        
+    def alight_passenger(self, passenger):
+        if passenger in self.passengers:
+            self.passengers.remove(passenger)
+            return True
+        return False
 
-    def alight_passenger(self):
-        """Removes a passenger if they are at their destination."""
-        if len(self.passengers[self.current_floor]) != 0:    
-            self.num_passengers -= 1
-            return self.passengers[self.current_floor].popleft()
-        return None
+    def is_full(self):
+        return len(self.passengers) >= self.capacity
+
+    def is_empty(self):
+        return len(self.passengers) == 0
