@@ -8,7 +8,7 @@ class Floor:
         self.level = level
         self.waiting_passengers = deque() # Queue of passenger objects
         
-    def add_passenger(self.passenger):
+    def add_passenger(self, passenger):
         self.waiting_passengers.append(passenger)
 
     def has_passengers(self):
