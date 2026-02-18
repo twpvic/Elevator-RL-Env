@@ -2,7 +2,7 @@ class Passenger:
     """
     Represents a single passenger in the system.
     """
-    def __init__(self, passenger_id, source_floor, destination_floor, spawn_time):
+    def __init__(self, passenger_id, source_floor, dest_floor, spawn_time):
         self.id = passenger_id
         self.source_floor = source_floor
         self.dest_floor = dest_floor

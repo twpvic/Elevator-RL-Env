@@ -1,5 +1,8 @@
 import time
 import random
+import numpy as np
+from controller import TraditionalController
+from dqn_agent import DQNAgent
 from elevator_system.environment import ElevatorSystemEnv
 from elevator_system.config import *
 
@@ -13,18 +16,6 @@ def get_random_actions(num_elevators):
     return [random.choice([action_up, action_down, action_board, action_alight, action_nothing]) 
             for _ in range(num_elevators)]
 
-def get_model_actions(model, state, num_elevators):
-    """Uses a trained TensorFlow model to predict actions."""
-    # This function mimics the act() method from the DQNAgent
-    state_tensor = np.array([state])
-    q_values = model.predict(state_tensor, verbose=0)
-    
-    # Reshape: (1, num_elevators * 5) -> (num_elevators, 5)
-    q_values_reshaped = q_values.reshape(num_elevators, 5)
-    
-    # Argmax to get best action index for each elevator
-    actions = np.argmax(q_values_reshaped, axis=1)
-    return list(actions)
 
 def run_simulation(episodes=1):
     env = ElevatorSystemEnv()
@@ -32,6 +23,19 @@ def run_simulation(episodes=1):
     # Initialize the logic controller
     controller = TraditionalController(num_elevators, num_floors)
     
+    # Initialize the DQN agent
+    if MODE == 'model':
+        state_dim = (2 * num_elevators) + (2 * num_floors)
+        agent = DQNAgent(state_dim, num_elevators)
+        
+        try:
+            agent.load(f"elevator_dqn_{num_elevators}_{num_floors}.weights.h5")
+            print("Loaded pre-trained model weights.")
+
+        except:
+            print("No pre-trained model found.")
+        agent.epsilon = 0.0  # Disable exploration for evaluation
+
     print(f"--- STARTING SIMULATION (Mode: {MODE}) ---")
     print(f"Params: {num_elevators} Elevators, {num_floors} Floors")
 
@@ -51,19 +55,17 @@ def run_simulation(episodes=1):
                 actions = get_random_actions(num_elevators)
                 
             elif MODE == 'model':
-                # actions = get_model_actions(model, state, num_elevators)
-                print("Model not loaded. Please uncomment model loading lines.")
-                break
+                actions = agent.act(state)
             
             # 2. Step Environment
             next_state, reward, done, info = env.step(actions)
             total_reward += reward
             state = next_state
             
-            # Optional: Slow down to watch print outputs if you add print statements
+            # Optional: Slow down to watch print outputs
             # time.sleep(0.05) 
 
-        # 3. End of Episode Stats
+        # --- EPISODE STATS ---
         print("-" * 40)
         print(f"EPISODE {ep + 1} FINISHED")
         print(f"Total Reward:        {total_reward:.1f}")

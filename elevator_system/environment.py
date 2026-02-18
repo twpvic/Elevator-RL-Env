@@ -1,16 +1,16 @@
 import numpy as np
 import random
-from config import *
+from .config import *
 from .passenger import Passenger
 from .floor import Floor
 from .elevator import Elevator
 
 class ElevatorSystemEnv:
     def __init__(self):
-        self.floors = [Floor(i) for i in range range(num_floors)]
+        self.floors = [Floor(i) for i in range(num_floors)]
         self.elevators = [Elevator(i, num_floors) for i in range(num_elevators)]
         self.passenger_counter = 0
-        self.time = 0
+        self.time_step = 0
 
         # 2 features per elevator (Floor, Load) + 2 features per floor (Up, Down)
         self.arrived_passengers = []
@@ -18,10 +18,10 @@ class ElevatorSystemEnv:
         
 
     def reset(self):
-        self.floors = [Floor(i) for i in range range(num_floors)]
+        self.floors = [Floor(i) for i in range(num_floors)]
         self.elevators = [Elevator(i, num_floors) for i in range(num_elevators)]
         self.passenger_counter = 0
-        self.time = 0
+        self.time_step = 0
         self.arrived_passengers = []
         return self.get_state()
 
@@ -35,7 +35,7 @@ class ElevatorSystemEnv:
             # normalize floor
             norm_floor = elevator.current_floor / (num_floors - 1)
             # normalize load
-            norm_load = len(elevator.passengers) / elevator_capacity
+            norm_load = elevator.total_passengers / elevator_capacity
 
             state.append(norm_floor)
             state.append(norm_load)
@@ -55,7 +55,7 @@ class ElevatorSystemEnv:
             state.append(up_button)
             state.append(down_button)
 
-        return np.array(state, dtype.np.float32)
+        return np.array(state, dtype=np.float32)
 
     def spawn_passengers(self):
         if random.random() < arrival_rate:
@@ -69,12 +69,12 @@ class ElevatorSystemEnv:
             self.passenger_counter += 1
 
     def update_wait_times(self):
-        # 1. Passengers waiting on floors
+        # Passengers waiting on floors
         for f in self.floors:
             for p in f.waiting_passengers:
                 p.wait_time_floor += 1
         
-        # 2. Passengers inside elevators
+        # Passengers inside elevators
         for e in self.elevators:
             for queue in e.passengers: # e.passengers is a list of deques
                 for p in queue:
@@ -97,32 +97,24 @@ class ElevatorSystemEnv:
                 avg_wait = sum(p.wait_time_floor + p.wait_time_lift for p in self.arrived_passengers) / len(self.arrived_passengers)
                 info['avg_wait_time'] = avg_wait
                 info['total_arrived'] = len(self.arrived_passengers)
-            else:
-                info['avg_wait_time'] = 0
-                info['total_arrived'] = 0
 
         for i, elevator in enumerate(self.elevators):
             action = actions[i]
             
             # --- FORCED LOGIC (If passengers inside) ---
             if not elevator.is_empty():
-                # 1. If anyone wants off HERE, force Alight
-                if elevator.passengers[elevator.current_floor]:
+                # 1. If anyone wants alight, force Alight
+                if len(elevator.passengers[elevator.current_floor]) > 0:
                     action = action_alight
-                else:
-                    # 2. Else, move towards nearest target
-                    target_floor = -1
-                    # Find first non-empty queue
-                    for floor_idx, q in enumerate(elevator.passengers):
-                        if q:
-                            target_floor = floor_idx
-                            break
-                    
-                    if target_floor != -1:
-                        if elevator.current_floor < target_floor:
-                            action = action_up
-                        elif elevator.current_floor > target_floor:
-                            action = action_down
+
+                elif not elevator.is_empty():
+                    # 2. Else, if we have a direction, we should try to move in that direction
+                    target_dir = elevator.get_target_direction()
+                    if target_dir == 1:
+                        action = action_up
+                    elif target_dir == -1:
+                        action = action_down
+
 
             # --- EXECUTE ACTION ---
             if action == action_up:
@@ -137,7 +129,6 @@ class ElevatorSystemEnv:
                 # Logic: Board from the queue that matches elevator direction, or longest if idle
                 # Simplified: Just take anyone (FIFO) for this tutorial level
                 if self.floors[elevator.current_floor].has_passengers():
-                    # Pass the actual deque to the elevator to pull from
                     floor_queue = self.floors[elevator.current_floor].waiting_passengers
                     boarded_count = elevator.board_passengers(floor_queue)
                     
