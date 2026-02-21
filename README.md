@@ -51,7 +51,8 @@ $$R = \left| \frac{1}{N} \sum_{j=1}^{N} e^{i\theta_j} \right|$$
 1.  **Clone the repository** to your local machine.
 2.  **Install dependencies**: Ensure you have Python installed. Run :
 ```bash
-pip install -r requirements.txt#
+pip install -r requirements.txt
+```
 
 ## Usage
 
@@ -61,12 +62,14 @@ Before running anything, you can adjust the physical parameters of the building 
 ### 2. Hyperparameter Tuning (Optional)
 To find the optimal hyperparameters for the DQN agent using Optuna, run:
 ```bash
-python tune_dqn.py#
+python tune_dqn.py
+```
 
 ### 3. Training DQN Model
 To train the DQN model, run:
 ```bash
-python train_dqn.py#
+python train_dqn.py
+```
 
 ### 4. Running the Simulation
 MODE = 'controller': Runs the traditional logic.
