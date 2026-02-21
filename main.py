@@ -71,6 +71,7 @@ def run_simulation(episodes=1):
         print(f"Total Reward:        {total_reward:.1f}")
         print(f"Passengers Arrived:  {info.get('total_arrived', 0)}")
         print(f"Average Wait Time:   {info.get('avg_wait_time', 0):.2f} steps")
+        print(f"Kuramoto Bunching:   {env.bunching_history[-1]:.5f}")
         print("-" * 40)
 
 if __name__ == "__main__":

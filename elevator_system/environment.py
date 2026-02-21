@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import random
 from .config import *
@@ -15,6 +16,8 @@ class ElevatorSystemEnv:
         # 2 features per elevator (Floor, Load) + 2 features per floor (Up, Down)
         self.arrived_passengers = []
         self.state_dim = (2 * num_elevators) + (2 * num_floors)
+
+        self.bunching_history = [] 
         
 
     def reset(self):
@@ -23,6 +26,7 @@ class ElevatorSystemEnv:
         self.passenger_counter = 0
         self.time_step = 0
         self.arrived_passengers = []
+        self.bunching_history = []
         return self.get_state()
 
     def get_state(self):
@@ -84,6 +88,9 @@ class ElevatorSystemEnv:
         self.time_step += 1
         self.spawn_passengers()
         self.update_wait_times()
+
+        current_bunching = self.calculate_kuramoto_order_parameter()
+        self.bunching_history.append(current_bunching)
 
         total_reward = 0
         done = False
@@ -156,3 +163,34 @@ class ElevatorSystemEnv:
 
         return self.get_state(), total_reward, done, info
                     
+    def calculate_kuramoto_order_parameter(self):
+        """
+        Calculates the Kuramoto order parameter to measure elevator bunching.
+        Returns a value between 0 and 1, where 1 means perfectly synchronized (bunched) and 0 means perfectly desynchronized.
+        """
+        if num_elevators <= 1:
+            return 1.0  # With one elevator, it's trivially "bunched"
+        
+        phases = []
+
+        for elevator in self.elevators:
+            norm_position = elevator.current_floor / (num_floors - 1)  
+
+            direction = elevator.get_target_direction()
+            if direction == 0:
+                 # Idle elevators contribute based on their position
+                phases.append(norm_position * math.pi)
+                phases.append(- norm_position * math.pi)
+            elif direction == 1:
+                phases.append(norm_position * math.pi)  # Up direction
+            else:
+                phases.append(- norm_position * math.pi)  # Down direction
+            
+        # Calculate Kuramoto order parameter
+        n = len(phases)
+        if n == 0:
+            return 0.0
+        sum_real = sum(math.cos(phase) for phase in phases)
+        sum_imag = sum(math.sin(phase) for phase in phases)
+        r = math.hypot(sum_real, sum_imag) / n
+        return r
