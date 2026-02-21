@@ -4,21 +4,24 @@ import tensorflow as tf
 from collections import deque
 
 class DQNAgent:
-    def __init__(self, state_dim, num_elevators, action_dim=5):
+    def __init__(self, state_dim, num_elevators, action_dim=5,
+                 gamma=0.99, epsilon=1.0, epsilon_min=0.01, epsilon_decay=0.9995,
+                 learning_rate=0.001, batch_size=32, memory_size=20000):
         self.state_dim = state_dim
         self.num_elevators = num_elevators
         self.action_dim = action_dim
         
         # Hyperparameters
-        self.gamma = 0.99           # Discount factor
-        self.epsilon = 1.0          # Exploration rate
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.9995
-        self.learning_rate = 0.001
-        self.batch_size = 32
+        self.gamma = gamma          # Discount factor
+        self.epsilon = epsilon      # Exploration rate
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.memory_size = memory_size
         
         # Replay Buffer
-        self.memory = deque(maxlen=20000)
+        self.memory = deque(maxlen=self.memory_size)
         
         # Models
         self.model = self._build_model()
