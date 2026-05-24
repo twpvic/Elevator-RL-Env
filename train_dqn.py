@@ -1,21 +1,17 @@
 import numpy as np
+import torch
 from elevator_system.environment import ElevatorSystemEnv
 from elevator_system.config import *
 from dqn_agent import DQNAgent
-import tensorflow as tf
 import os
 
 # --- GPU CONFIGURATION ---
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        print(f"GPUs detected: {len(gpus)}. Memory growth enabled.")
-    except RuntimeError as e:
-        print(f"Error setting GPU memory growth: {e}")
-    else:
-        print("No GPUs detected. Running on CPU.")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+if torch.cuda.is_available():
+    print(f"GPUs detected: {torch.cuda.device_count()}.")
+else:
+    print("No GPUs detected. Running on CPU.")
         
 # Training Settings
 EPISODES = 100
@@ -62,8 +58,8 @@ def run_training():
         else:
             print(f"Episode {e+1}/{EPISODES} | Reward: {total_reward:.1f}", end='\r')
 
-    # Save final model
-    agent.save(f"elevator_dqn_{num_elevators}_{num_floors}.weights.h5")
+    # Save final model (updated to standard PyTorch .pth extension)
+    agent.save(f"elevator_dqn_{num_elevators}_{num_floors}.weights.pth")
     print("\nTraining Complete. Model saved.")
 
 if __name__ == "__main__":

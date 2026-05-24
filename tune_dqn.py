@@ -1,11 +1,10 @@
 import optuna
 import numpy as np
 import random
+import torch
 from elevator_system.environment import ElevatorSystemEnv
 from elevator_system.config import *
 from dqn_agent import DQNAgent
-import tensorflow as tf
-
 
 # --- Tuning config ---
 trial_episodes = 100
@@ -17,13 +16,13 @@ def objective(trial):
     Samples hyperparameters, trains the agent briefly, and returns a fitness score.
     """
     
-    # 1. Define the Hyperparameter Search Space
+    # Define the Hyperparameter Search Space
     learning_rate = trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True)
     gamma = trial.suggest_float('gamma', 0.8, 0.999)
     epsilon_decay = trial.suggest_float('epsilon_decay', 0.95, 0.9999)
     batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128])
     
-    # 2. Setup the Environment
+    # Setup the Environment
     env = ElevatorSystemEnv()
     
     # Calculate state dimension based on config: 2 features per elevator + 2 features per floor
@@ -41,7 +40,7 @@ def objective(trial):
 
     trial_rewards = []
 
-    # 3. Run the Training Loop
+    # Run the Training Loop
     for e in range(trial_episodes):
         state = env.reset()
         total_reward = 0
@@ -61,20 +60,21 @@ def objective(trial):
 
         trial_rewards.append(total_reward)
         
-        # 4. Report intermediate results to Optuna for Pruning
+        # Report intermediate results to Optuna for Pruning
         trial.report(total_reward, e)
         
         # Handle Pruning: If the trial is performing terribly early on, Optuna will kill it to save time
         if trial.should_prune():
             raise optuna.TrialPruned()
 
-    # 5. Return the Metric to Maximize
+    # Return the Metric to Maximize
     # We use the average reward of the last 10 episodes to gauge the final stabilized performance
     final_score = np.mean(trial_rewards[-10:])
     return final_score
 
 if __name__ == "__main__":
-    print("--- STARTING OPTUNA HYPERPARAMETER TUNING ---")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"--- STARTING OPTUNA HYPERPARAMETER TUNING ON {device.type.upper()} ---")
     
     # Create a study object and specify that we want to MAXIMIZE the reward
     study = optuna.create_study(

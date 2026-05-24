@@ -1,7 +1,21 @@
 import numpy as np
 import random
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from collections import deque
+
+class DQNNetwork(nn.Module):
+    def __init__(self, state_dim, output_dim):
+        super(DQNNetwork, self).__init__()
+        self.fc1 = nn.Linear(state_dim, 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, output_dim)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        return self.fc3(x)  # Linear activation output
 
 class DQNAgent:
     def __init__(self, state_dim, num_elevators, action_dim=5,
@@ -20,34 +34,25 @@ class DQNAgent:
         self.batch_size = batch_size
         self.memory_size = memory_size
         
+        # Device configuration (GPU/CUDA support)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
         # Replay Buffer
         self.memory = deque(maxlen=self.memory_size)
         
         # Models
-        self.model = self._build_model()
-        self.target_model = self._build_model()
-        self.update_target_model()
-
-    def _build_model(self):
-        """
-        Builds a Dense Neural Network.
-        Input: State Vector (2*elevators + 2*floors)
-        Output: Q-values for ALL elevators concatenated (num_elevators * 5 actions)
-        """
-        model = tf.keras.Sequential([
-            tf.keras.layers.InputLayer(input_shape=(self.state_dim,)),
-            tf.keras.layers.Dense(64, activation='relu'),
-            tf.keras.layers.Dense(64, activation='relu'),
-            # Output layer: Flattened Q-values for all elevators
-            tf.keras.layers.Dense(self.num_elevators * self.action_dim, activation='linear')
-        ])
+        output_dim = self.num_elevators * self.action_dim
+        self.model = DQNNetwork(self.state_dim, output_dim).to(self.device)
+        self.target_model = DQNNetwork(self.state_dim, output_dim).to(self.device)
         
-        model.compile(loss='mse', optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate))
-        return model
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        self.criterion = nn.MSELoss()
+        
+        self.update_target_model()
 
     def update_target_model(self):
         """Copies weights from main model to target model."""
-        self.target_model.set_weights(self.model.get_weights())
+        self.target_model.load_state_dict(self.model.state_dict())
 
     def remember(self, state, actions, reward, next_state, done):
         """Stores experience in replay buffer."""
@@ -60,8 +65,12 @@ class DQNAgent:
             return [random.randint(0, self.action_dim - 1) for _ in range(self.num_elevators)]
         
         # Exploitation
-        state_tensor = np.array([state])  # Shape (1, state_dim)
-        q_values_flat = self.model.predict(state_tensor, verbose=0)
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+        
+        self.model.eval()
+        with torch.no_grad():
+            q_values_flat = self.model(state_tensor).cpu().numpy()[0]
+        self.model.train()
         
         # Reshape to (num_elevators, 5) to get best action for each elevator
         q_values = q_values_flat.reshape(self.num_elevators, self.action_dim)
@@ -76,46 +85,53 @@ class DQNAgent:
 
         minibatch = random.sample(self.memory, self.batch_size)
         
-        states = np.array([t[0] for t in minibatch])
-        next_states = np.array([t[3] for t in minibatch])
+        states = torch.FloatTensor(np.array([t[0] for t in minibatch])).to(self.device)
+        next_states = torch.FloatTensor(np.array([t[3] for t in minibatch])).to(self.device)
         
-        with tf.device('/GPU:0'):
-            # 1. Predict Q-values for current states (to get baseline for non-taken actions)
-            target_qs = self.model.predict(states, verbose=0)
-            
+        # 1. Predict Q-values for current states (detached as baseline)
+        with torch.no_grad():
+            target_qs = self.model(states).cpu().numpy()
             # 2. Predict Q-values for next states (using Target Network)
-            next_qs_flat = self.target_model.predict(next_states, verbose=0)
+            next_qs_flat = self.target_model(next_states).cpu().numpy()
+        
+        # 3. Update Q-values for the specific actions taken
+        for i, (state, actions, reward, next_state, done) in enumerate(minibatch):
             
-            # 3. Update Q-values for the specific actions taken
-            for i, (state, actions, reward, next_state, done) in enumerate(minibatch):
+            # We must update the target value for EACH elevator's chosen action
+            for elev_idx in range(self.num_elevators):
+                action_taken = actions[elev_idx]
                 
-                # We must update the target value for EACH elevator's chosen action
-                for elev_idx in range(self.num_elevators):
-                    action_taken = actions[elev_idx]
-                    
-                    # Calculate Target: R + gamma * max(Q_next)
-                    if done:
-                        target = reward
-                    else:
-                        # Slice the next_qs for this specific elevator to find its max Q
-                        start = elev_idx * self.action_dim
-                        end = start + self.action_dim
-                        max_next_q = np.amax(next_qs_flat[i][start:end])
-                        target = reward + self.gamma * max_next_q
-                    
-                    # Update the specific slot in the flat output vector
-                    flat_idx = (elev_idx * self.action_dim) + action_taken
-                    target_qs[i][flat_idx] = target
-            
-            # 4. Train the model
-            self.model.fit(states, target_qs, epochs=1, verbose=0)
+                # Calculate Target: R + gamma * max(Q_next)
+                if done:
+                    target = reward
+                else:
+                    # Slice the next_qs for this specific elevator to find its max Q
+                    start = elev_idx * self.action_dim
+                    end = start + self.action_dim
+                    max_next_q = np.amax(next_qs_flat[i][start:end])
+                    target = reward + self.gamma * max_next_q
+                
+                # Update the specific slot in the flat output vector
+                flat_idx = (elev_idx * self.action_dim) + action_taken
+                target_qs[i][flat_idx] = target
+        
+        # Convert updated targets back to tensor
+        expected_q = torch.FloatTensor(target_qs).to(self.device)
+        
+        # 4. Train the model
+        current_q = self.model(states)
+        loss = self.criterion(current_q, expected_q)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
         
         # 5. Decay Epsilon
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
     def load(self, name):
-        self.model.load_weights(name)
+        self.model.load_state_dict(torch.load(name, weights_only=True))
 
     def save(self, name):
-        self.model.save_weights(name)
+        torch.save(self.model.state_dict(), name)

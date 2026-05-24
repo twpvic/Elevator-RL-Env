@@ -1,9 +1,9 @@
-num_floors = 5
+num_floors = 10
 num_elevators = 2
 elevator_capacity = 4
-arrival_rate = 0.3  # Probability of a new passenger spawning per time step
+arrival_rate = 0.8  # Probability of a new passenger spawning per time step
 max_simulation_steps = 1000
-passengers_per_step = 2 # Max passengers that can board/alight per time step
+passengers_per_step = 1 # Max passengers that can board/alight per time step
 
 # Discrete Actions
 action_nothing = 0
