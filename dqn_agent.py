@@ -18,8 +18,12 @@ class DQNNetwork(nn.Module):
         return self.fc3(x)  # Linear activation output
 
 class DQNAgent:
+    # epsilon_decay is applied once per EPISODE (see decay_epsilon), so pick it
+    # from the episode budget: reaching epsilon_min takes
+    # log(epsilon_min) / log(epsilon_decay) episodes. The default of 0.95
+    # bottoms out at roughly episode 90, suiting the 100-episode training run.
     def __init__(self, state_dim, num_elevators, action_dim=5,
-                 gamma=0.99, epsilon=1.0, epsilon_min=0.01, epsilon_decay=0.9995,
+                 gamma=0.99, epsilon=1.0, epsilon_min=0.01, epsilon_decay=0.95,
                  learning_rate=0.001, batch_size=32, memory_size=20000):
         self.state_dim = state_dim
         self.num_elevators = num_elevators
@@ -54,9 +58,20 @@ class DQNAgent:
         """Copies weights from main model to target model."""
         self.target_model.load_state_dict(self.model.state_dict())
 
-    def remember(self, state, actions, reward, next_state, done):
-        """Stores experience in replay buffer."""
-        self.memory.append((state, actions, reward, next_state, done))
+    def remember(self, state, actions, rewards, next_state, terminated):
+        """
+        Stores experience in replay buffer.
+
+        `rewards` is one reward per elevator (the env's info['rewards']), so
+        each car is trained on what it actually did rather than on the whole
+        building's total.
+
+        `terminated` must be the env's terminated flag, NOT `done`. An episode
+        that merely ran out of time is still ongoing as far as the value
+        function is concerned; treating that as terminal teaches the agent that
+        returns collapse at the horizon.
+        """
+        self.memory.append((state, actions, rewards, next_state, terminated))
 
     def act(self, state):
         """Selects actions for all elevators (Epsilon-Greedy)."""
@@ -84,54 +99,55 @@ class DQNAgent:
             return
 
         minibatch = random.sample(self.memory, self.batch_size)
-        
-        states = torch.FloatTensor(np.array([t[0] for t in minibatch])).to(self.device)
-        next_states = torch.FloatTensor(np.array([t[3] for t in minibatch])).to(self.device)
-        
-        # 1. Predict Q-values for current states (detached as baseline)
+        states, actions, rewards, next_states, terminated = zip(*minibatch)
+
+        # Everything below works on (batch, elevator, action) tensors and stays
+        # on-device. The previous per-sample, per-elevator Python loop with
+        # GPU->CPU->GPU numpy round-trips ran on every environment step and
+        # dominated training time.
+        b, e, a = self.batch_size, self.num_elevators, self.action_dim
+
+        states = torch.as_tensor(np.asarray(states, dtype=np.float32), device=self.device)
+        next_states = torch.as_tensor(np.asarray(next_states, dtype=np.float32), device=self.device)
+        actions = torch.as_tensor(np.asarray(actions, dtype=np.int64), device=self.device)
+        rewards = torch.as_tensor(np.asarray(rewards, dtype=np.float32), device=self.device)
+        terminated = torch.as_tensor(np.asarray(terminated, dtype=np.float32), device=self.device)
+
+        # 1. Target per elevator: R + gamma * max_a' Q_target(s', a')
+        #    Bootstrapping is only cut off on a true terminal state, so an
+        #    episode that just hit the time limit still bootstraps.
         with torch.no_grad():
-            target_qs = self.model(states).cpu().numpy()
-            # 2. Predict Q-values for next states (using Target Network)
-            next_qs_flat = self.target_model(next_states).cpu().numpy()
-        
-        # 3. Update Q-values for the specific actions taken
-        for i, (state, actions, reward, next_state, done) in enumerate(minibatch):
-            
-            # We must update the target value for EACH elevator's chosen action
-            for elev_idx in range(self.num_elevators):
-                action_taken = actions[elev_idx]
-                
-                # Calculate Target: R + gamma * max(Q_next)
-                if done:
-                    target = reward
-                else:
-                    # Slice the next_qs for this specific elevator to find its max Q
-                    start = elev_idx * self.action_dim
-                    end = start + self.action_dim
-                    max_next_q = np.amax(next_qs_flat[i][start:end])
-                    target = reward + self.gamma * max_next_q
-                
-                # Update the specific slot in the flat output vector
-                flat_idx = (elev_idx * self.action_dim) + action_taken
-                target_qs[i][flat_idx] = target
-        
-        # Convert updated targets back to tensor
-        expected_q = torch.FloatTensor(target_qs).to(self.device)
-        
-        # 4. Train the model
-        current_q = self.model(states)
+            max_next_q = self.target_model(next_states).view(b, e, a).max(dim=2).values
+            expected_q = rewards + self.gamma * max_next_q * (1.0 - terminated).unsqueeze(1)
+
+        # 2. Q-value of the action each elevator actually took
+        current_q = (self.model(states)
+                     .view(b, e, a)
+                     .gather(2, actions.unsqueeze(2))
+                     .squeeze(2))
+
+        # 3. Train the model
         loss = self.criterion(current_q, expected_q)
-        
+
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        
-        # 5. Decay Epsilon
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+
+    def decay_epsilon(self):
+        """
+        Decays exploration by one step. Call this once per episode.
+        """
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def load(self, name):
-        self.model.load_state_dict(torch.load(name, weights_only=True))
+        """
+        Loads weights onto whichever device this agent is using.
+        """
+        self.model.load_state_dict(
+            torch.load(name, map_location=self.device, weights_only=True))
+        # Otherwise the target network keeps its random initialisation, which
+        # is invisible during evaluation but poisons any resumed training.
+        self.update_target_model()
 
     def save(self, name):
         torch.save(self.model.state_dict(), name)

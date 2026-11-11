@@ -1,28 +1,34 @@
 import math
 import numpy as np
-import random
 from .config import *
 from .passenger import Passenger
 from .floor import Floor
 from .elevator import Elevator
 
 class ElevatorSystemEnv:
-    def __init__(self):
+    def __init__(self, seed=None):
+        # The simulation keeps its own RNG stream rather than using the global
+        # one, so arrivals stay reproducible and are not perturbed by whatever
+        # the agent happens to sample during exploration.
+        self.rng = np.random.default_rng(seed)
+
+        # 2 per elevator (Floor, Load) + 2 per floor (Up, Down)
+        # + one car-call bit per floor per elevator
+        self.state_dim = ((2 * num_elevators) + (2 * num_floors)
+                          + (num_elevators * num_floors))
+
+        self.reset()
+
+    def reset(self, seed=None):
+        """
+        Starts a fresh episode. Pass a seed to replay one exact episode;
+        omit it to draw the next episode from the existing stream.
+        """
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+
         self.floors = [Floor(i) for i in range(num_floors)]
-        self.elevators = [Elevator(i, num_floors) for i in range(num_elevators)]
-        self.passenger_counter = 0
-        self.time_step = 0
-
-        # 2 features per elevator (Floor, Load) + 2 features per floor (Up, Down)
-        self.arrived_passengers = []
-        self.state_dim = (2 * num_elevators) + (2 * num_floors)
-
-        self.bunching_history = [] 
-        
-
-    def reset(self):
-        self.floors = [Floor(i) for i in range(num_floors)]
-        self.elevators = [Elevator(i, num_floors) for i in range(num_elevators)]
+        self.elevators = [Elevator(i, num_floors, self.rng) for i in range(num_elevators)]
         self.passenger_counter = 0
         self.time_step = 0
         self.arrived_passengers = []
@@ -59,14 +65,27 @@ class ElevatorSystemEnv:
             state.append(up_button)
             state.append(down_button)
 
+        # Car calls: which floors the passengers already inside each car have
+        # selected. Without this the agent cannot see where its own load wants
+        # to go, which leaves the problem needlessly partially observed.
+        # Appended last so existing parsers of the earlier blocks stay valid.
+        for elevator in self.elevators:
+            for floor in range(num_floors):
+                state.append(1.0 if elevator.passengers[floor] else 0.0)
+
         return np.array(state, dtype=np.float32)
 
     def spawn_passengers(self):
-        if random.random() < arrival_rate:
-            start = random.randint(0, num_floors - 1)
-            dest = random.randint(0, num_floors - 1)
-            while dest == start:
-                dest = random.randint(0, num_floors - 1)
+        # Poisson arrivals. A Bernoulli trial can never produce two passengers
+        # in the same step, so it cannot represent the bursts that actually
+        # stress a lift system.
+        for _ in range(int(self.rng.poisson(arrival_rate))):
+            start = int(self.rng.integers(num_floors))
+            # Draw from the num_floors - 1 floors that are not `start`, then
+            # shift past it. Avoids an unbounded rejection loop.
+            dest = int(self.rng.integers(num_floors - 1))
+            if dest >= start:
+                dest += 1
 
             p = Passenger(self.passenger_counter, start, dest, self.time_step)
             self.floors[start].add_passenger(p)
@@ -86,36 +105,54 @@ class ElevatorSystemEnv:
 
     def step(self, actions):
         self.time_step += 1
-        self.spawn_passengers()
+
+        # Age the passengers already in the system BEFORE the new arrivals land,
+        # so nobody is charged for the step they spawned in. Charging them made
+        # `arrival_time - spawn_time` disagree with the accumulated wait counters
+        # by one, and put a floor of 1 under every passenger's wait.
         self.update_wait_times()
+        self.spawn_passengers()
 
-        current_bunching = self.calculate_kuramoto_order_parameter()
-        self.bunching_history.append(current_bunching)
+        # Rewards are tracked per elevator rather than as one scalar: crediting
+        # every car for whatever any other car delivered makes the learning
+        # signal far noisier than it needs to be. They still sum to the
+        # system-level reward, which is what step() returns.
+        rewards = np.zeros(len(self.elevators), dtype=np.float32)
 
-        total_reward = 0
-        done = False
-        info = {}
+        # Waiting is what the system exists to minimise, so charge for it every
+        # step. Without this nothing in the reward distinguishes a passenger
+        # served in 5 steps from one served in 500. It is a whole-system cost,
+        # so it is split evenly rather than blamed on any one car.
+        waiting = sum(len(f.waiting_passengers) for f in self.floors)
+        riding = sum(e.total_passengers for e in self.elevators)
+        rewards += reward_wait_penalty * (waiting + riding) / len(self.elevators)
 
-        # Check simulation end
-        if self.time_step >= max_simulation_steps:
-            done = True
-            # Calculate metrics
-            if len(self.arrived_passengers) > 0:
-                avg_wait = sum(p.wait_time_floor + p.wait_time_lift for p in self.arrived_passengers) / len(self.arrived_passengers)
-                info['avg_wait_time'] = avg_wait
-                info['total_arrived'] = len(self.arrived_passengers)
+        # What each car was actually made to do, which is not always what was
+        # asked for -- see the forced-logic block below. Training on the
+        # requested action while paying out the executed action's reward
+        # credits the agent for moves it never made, so step() reports this
+        # back and the replay buffer stores it instead of `actions`.
+        executed_actions = []
 
         for i, elevator in enumerate(self.elevators):
             action = actions[i]
-            
+
             # --- FORCED LOGIC (If passengers inside) ---
             if not elevator.is_empty():
+                waiting_here = self.floors[elevator.current_floor].waiting_passengers
+
                 # 1. If anyone wants alight, force Alight
                 if len(elevator.passengers[elevator.current_floor]) > 0:
                     action = action_alight
 
-                elif not elevator.is_empty():
-                    # 2. Else, if we have a direction, we should try to move in that direction
+                # 2. Honour a requested en-route pickup: we still have room and
+                #    someone here is heading our way, so stopping costs the
+                #    passengers inside nothing but a single step.
+                elif action == action_board and elevator.has_compatible_passenger(waiting_here):
+                    pass
+
+                else:
+                    # 3. Else, if we have a direction, we should try to move in that direction
                     target_dir = elevator.get_target_direction()
                     if target_dir == 1:
                         action = action_up
@@ -124,13 +161,15 @@ class ElevatorSystemEnv:
 
 
             # --- EXECUTE ACTION ---
+            executed_actions.append(int(action))
+
             if action == action_up:
                 success, r = elevator.move(action_up)
-                total_reward += r
+                rewards[i] += r
 
             elif action == action_down:
                 success, r = elevator.move(action_down)
-                total_reward += r
+                rewards[i] += r
 
             elif action == action_board:
                 # Logic: Board from the queue that matches elevator direction, or longest if idle
@@ -138,59 +177,102 @@ class ElevatorSystemEnv:
                 if self.floors[elevator.current_floor].has_passengers():
                     floor_queue = self.floors[elevator.current_floor].waiting_passengers
                     boarded_count = elevator.board_passengers(floor_queue)
-                    
+
                     if boarded_count > 0:
-                        total_reward += (2 * boarded_count) # Reward per person
+                        rewards[i] += (reward_board * boarded_count) # Reward per person
                     else:
-                        total_reward += reward_invalid_move # Full
+                        rewards[i] += reward_invalid_move # Full
                 else:
-                    total_reward += reward_invalid_move # Empty floor
+                    rewards[i] += reward_invalid_move # Empty floor
 
             elif action == action_alight:
                 alighted_list = elevator.alight_passengers()
                 if alighted_list:
-                    total_reward += (reward_delivery * len(alighted_list))
-                    
+                    rewards[i] += (reward_delivery * len(alighted_list))
+
                     # Log arrival data
                     for p in alighted_list:
                         p.arrival_time = self.time_step
                         self.arrived_passengers.append(p)
                 else:
-                    total_reward += reward_invalid_move # Nobody to drop
+                    rewards[i] += reward_invalid_move # Nobody to drop
 
             elif action == action_nothing:
-                total_reward += reward_step_penalty
+                rewards[i] += reward_step_penalty
 
-        return self.get_state(), total_reward, done, info
-                    
+        # Measured after the actions, so the configuration recorded is the one
+        # this step actually produced.
+        self.bunching_history.append(self.calculate_kuramoto_order_parameter())
+
+        # The episode ends because it hit the horizon, not because the building
+        # reached a terminal state. Reported separately so the agent knows to
+        # keep bootstrapping through it.
+        truncated = self.time_step >= max_simulation_steps
+        done = truncated
+
+        info = {'rewards': rewards, 'executed_actions': executed_actions,
+                'terminated': False, 'truncated': truncated}
+        if done:
+            # Computed after the loop, so this step's deliveries are counted.
+            info.update(self.episode_metrics())
+
+        return self.get_state(), float(rewards.sum()), done, info
+
+    def episode_metrics(self):
+        """
+        Summary over EVERY passenger who spawned, not just the delivered ones.
+        """
+        arrived = self.arrived_passengers
+        unserved = [p for f in self.floors for p in f.waiting_passengers]
+        unserved += [p for e in self.elevators for q in e.passengers for p in q]
+
+        waits_arrived = [p.wait_time_floor + p.wait_time_lift for p in arrived]
+        waits_all = waits_arrived + [p.wait_time_floor + p.wait_time_lift
+                                     for p in unserved]
+
+        return {
+            'total_spawned': self.passenger_counter,
+            'total_arrived': len(arrived),
+            'total_unserved': len(unserved),
+            # Delivered passengers only. Flattering, and gameable: a policy that
+            # serves a handful of easy fares and strands everyone else scores
+            # well here. Kept because it is the figure reported historically.
+            'avg_wait_time': float(np.mean(waits_arrived)) if waits_arrived else 0.0,
+            # Everyone who ever spawned, so stranding passengers is penalised.
+            # This is the honest headline number.
+            'avg_wait_all': float(np.mean(waits_all)) if waits_all else 0.0,
+            'mean_bunching': (float(np.mean(self.bunching_history))
+                              if self.bunching_history else 0.0),
+        }
+
+
     def calculate_kuramoto_order_parameter(self):
         """
         Calculates the Kuramoto order parameter to measure elevator bunching.
         Returns a value between 0 and 1, where 1 means perfectly synchronized (bunched) and 0 means perfectly desynchronized.
         """
-        if num_elevators <= 1:
+        n = len(self.elevators)
+        if n <= 1:
             return 1.0  # With one elevator, it's trivially "bunched"
-        
+
         phases = []
 
         for elevator in self.elevators:
-            norm_position = elevator.current_floor / (num_floors - 1)  
+            norm_position = elevator.current_floor / (num_floors - 1)
 
             direction = elevator.get_target_direction()
             if direction == 0:
-                 # Idle elevators contribute based on their position
-                phases.append(norm_position * math.pi)
-                phases.append(- norm_position * math.pi)
-            elif direction == 1:
-                phases.append(norm_position * math.pi)  # Up direction
-            else:
-                phases.append(- norm_position * math.pi)  # Down direction
-            
+                # An idle car is still parked somewhere in its up/down cycle,
+                # so give it one phase based on where it was last headed.
+                # Giving it two (one per direction) would let it cancel itself
+                # out while still counting toward n, deflating R.
+                direction = elevator.last_direction
+
+            # Position maps onto [0, pi] going up and [-pi, 0] coming down, so
+            # one full up-and-down journey traverses the circle exactly once.
+            phases.append(direction * norm_position * math.pi)
+
         # Calculate Kuramoto order parameter
-        n = len(phases)
-        if n == 0:
-            return 0.0
         sum_real = sum(math.cos(phase) for phase in phases)
         sum_imag = sum(math.sin(phase) for phase in phases)
-        r = math.hypot(sum_real, sum_imag) / n
-        return r
+        return math.hypot(sum_real, sum_imag) / n

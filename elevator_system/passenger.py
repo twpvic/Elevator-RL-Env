@@ -9,10 +9,11 @@ class Passenger:
         self.spawn_time = spawn_time
         self.arrival_time = None
         
-        # Metrics
+        # Metrics. Total wait is wait_time_floor + wait_time_lift; whether the
+        # passenger is currently aboard is implied by which container holds
+        # them, so it is not tracked separately.
         self.wait_time_floor = 0
         self.wait_time_lift = 0
-        self.in_elevator = False
 
     def __repr__(self):
         status = f"Arrived: {self.arrival_time}" if self.arrival_time else "In Transit"

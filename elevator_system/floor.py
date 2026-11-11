@@ -14,9 +14,3 @@ class Floor:
     def has_passengers(self):
         return len(self.waiting_passengers) > 0
 
-    def remove_passenger(self, passenger):
-        if passenger in self.waiting_passengers:
-            self.waiting_passengers.remove(passenger)
-            return passenger
-        return None
-

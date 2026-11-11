@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# Trained models and checkpoints
+*.pth
+*.h5
+
+# Tuning outputs
+best_params.json
+tuning_trials.csv
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
